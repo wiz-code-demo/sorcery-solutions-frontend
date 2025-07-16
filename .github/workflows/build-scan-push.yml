@@ -5,10 +5,14 @@ on:
   push:
     branches:
       - main
+      - wiz-os
     paths:
       - src/**
       - "**.ts"
       - Dockerfile
+  pull_request:
+    branches:
+      - main
 
 permissions:
   id-token: write
@@ -17,12 +21,15 @@ permissions:
 jobs:
   docker_build:
     runs-on: ubuntu-latest
+    env:
+      WIZ_CLIENT_ID: ${{ secrets.WIZ_CLIENT_ID }}
+      WIZ_CLIENT_SECRET: ${{ secrets.WIZ_CLIENT_SECRET }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - dockerfile: ./
-            image: ${{ vars.IMAGE_REGISTRY }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_TAG }}
+            image: ${{ vars.IMAGE_REGISTRY }}/${{ vars.IMAGE_NAME }}
 
     steps:
       - name: Checkout
@@ -34,53 +41,90 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # - name: Collect Docker Metadata
-      #   id: meta
-      #   uses: docker/metadata-action@v5
-      #   with:
-      #     images: ${{ matrix.image }}
-      #     tags: |
-      #       type=ref,event=branch
-      #       type=ref,event=pr
-      #       type=semver,pattern={{version}}
-      #       type=semver,pattern={{major}}.{{minor}}
+      - name: Collect Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ matrix.image }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Get First Docker Tag
+        id: first-tag
+        run: |
+          echo "tag=${{ fromJSON(steps.meta.outputs.json).tags[0] }}" >> $GITHUB_OUTPUT
 
       - name: Configure AWS Credentials
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Login to Container Registry
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         uses: docker/login-action@v3
         with:
           registry: ${{ vars.IMAGE_REGISTRY }}
 
-      - name: Build and Publish to Docker
-        id: build-and-push
-        if: github.event_name != 'pull_request'
+      - name: Login to Base Image Registry (if needed)
+        if: ${{ vars.BASE_IMAGE_REGISTRY != '' && vars.BASE_IMAGE_REGISTRY != null }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ vars.BASE_IMAGE_REGISTRY }}
+          username: ${{ secrets.BASE_IMAGE_REGISTRY_USERNAME }}
+          password: ${{ secrets.BASE_IMAGE_REGISTRY_PASSWORD }}
+
+      - name: Build Docker Image
+        id: build-image
         uses: docker/build-push-action@v6
         with:
           cache-from: type=gha
           cache-to: type=gha,mode=max
           context: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ matrix.image }}
+          load: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-      - name: Integrate CI data with Wiz
+      - name: Scan Container with Wiz
         run: |
-          docker pull ${{ matrix.image }}
           if [[ ! -z "${{ vars.WIZ_ENV }}" && "${{ vars.WIZ_ENV }}" != "app" ]]; then export WIZ_ENV=${{ vars.WIZ_ENV }}; fi
           curl -Lo wizcli https://wizcli.app.wiz.io/latest/wizcli-linux-amd64
           chmod +x wizcli
-          ./wizcli auth --id "${{ secrets.WIZ_CLIENT_ID }}" --secret "${{ secrets.WIZ_CLIENT_SECRET }}"
-          ./wizcli docker scan --image ${{ matrix.image }} --dockerfile "${{ matrix.dockerfile }}/Dockerfile" \
+          ./wizcli auth
+          ./wizcli docker scan --image "${{ steps.first-tag.outputs.tag }}" --dockerfile "${{ matrix.dockerfile }}Dockerfile" \
             -p "Default vulnerabilities policy - Do Not Modify" \
             -p "Default sensitive data policy" \
             -p "Default secrets policy" \
             -p "Default malware policy"
-          ./wizcli docker tag --image ${{ matrix.image }}
+        continue-on-error: true
+
+      - name: Push Docker Image
+        id: push-image
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: docker/build-push-action@v6
+        with:
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          context: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Pull Image for Wiz Tagging
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          docker pull ${{ steps.first-tag.outputs.tag }}
+
+      - name: Tag Container with Wiz
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        run: |
+          if [[ ! -z "${{ vars.WIZ_ENV }}" && "${{ vars.WIZ_ENV }}" != "app" ]]; then export WIZ_ENV=${{ vars.WIZ_ENV }}; fi
+          ./wizcli docker tag --image "${{ steps.first-tag.outputs.tag }}"
         continue-on-error: true
