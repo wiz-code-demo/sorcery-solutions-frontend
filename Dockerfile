@@ -37,7 +37,7 @@ RUN \
     fi
 
 # Production image, copy all the files and run next
-FROM base AS runner
+FROM registry.os.test.wiz.io/nodejs:latest AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -64,4 +64,4 @@ ENV PORT=3000
 # server.js is created by next build from the standalone output
 # https://nextjs.org/docs/pages/api-reference/config/next-config-js/output
 ENV HOSTNAME="0.0.0.0"
-CMD ["node", "server.js"]
+CMD ["server.js"]

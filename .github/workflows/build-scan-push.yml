@@ -126,5 +126,10 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
         run: |
           if [[ ! -z "${{ vars.WIZ_ENV }}" && "${{ vars.WIZ_ENV }}" != "app" ]]; then export WIZ_ENV=${{ vars.WIZ_ENV }}; fi
+          ./wizcli docker scan --image "${{ steps.first-tag.outputs.tag }}" --dockerfile "${{ matrix.dockerfile }}Dockerfile" \
+            -p "Default vulnerabilities policy - Do Not Modify" \
+            -p "Default sensitive data policy" \
+            -p "Default secrets policy" \
+            -p "Default malware policy"
           ./wizcli docker tag --image "${{ steps.first-tag.outputs.tag }}"
         continue-on-error: true
