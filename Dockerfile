@@ -37,7 +37,7 @@ RUN \
     fi
 
 # Production image, copy all the files and run next
-FROM registry.os.test.wiz.io/nodejs:latest AS runner
+FROM registry.os.test.wiz.io/node:latest AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
